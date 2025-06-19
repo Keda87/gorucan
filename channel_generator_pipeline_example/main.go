@@ -164,6 +164,7 @@ func Display(ctx context.Context, row <-chan Data) {
 }
 
 func main() {
+	start := time.Now()
 	ctx := context.Background()
 
 	var (
@@ -173,4 +174,5 @@ func main() {
 	)
 
 	Display(ctx, verified)
+	fmt.Println("execution: ", time.Since(start))
 }
