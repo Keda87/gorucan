@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+// jobs <-chan string   : it's a channel for receiving data only (reading channel).
+// result chan<- string : it's a channel for producer (publish data).
 func workerStringUpperCase(id int, jobs <-chan string, result chan<- string) {
 	for job := range jobs {
 		fmt.Println("Worker: ", id, " started job")
