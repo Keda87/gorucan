@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
+	"encoding/csv"
 	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+const bufferSize = 5
 
 const csv1 = `
 email,saving_amount,debt_amount
@@ -68,49 +72,61 @@ type Data struct {
 	NetWorth float64
 }
 
-func readCSV(source string) <-chan Data {
-	out := make(chan Data)
+func readCSV(ctx context.Context, source string) <-chan Data {
+	out := make(chan Data, bufferSize)
 
 	go func(txt string) {
 		defer close(out)
 
-		lines := strings.Split(txt, "\n")
-		for _, row := range lines {
-			if row == "" {
+		reader := csv.NewReader(strings.NewReader(source))
+		records, err := reader.ReadAll()
+		if err != nil {
+			fmt.Println("error read csv:", err.Error())
+			return
+		}
+
+		for i, row := range records {
+			if i == 0 { // skip header.
 				continue
 			}
 
-			columns := strings.Split(row, ",")
-			if columns[0] == "email" {
-				continue
-			}
+			var (
+				saving, _ = strconv.ParseFloat(row[1], 64)
+				debt, _   = strconv.ParseFloat(row[2], 64)
+			)
 
-			saving, _ := strconv.ParseFloat(columns[1], 64)
-			debt, _ := strconv.ParseFloat(columns[2], 64)
-			out <- Data{
-				Email:    columns[0],
+			select {
+			case <-ctx.Done():
+				fmt.Println("read csv cancelled")
+				return
+			case out <- Data{
+				Email:    row[0],
 				Saving:   saving,
 				Debt:     debt,
 				NetWorth: saving - debt,
+			}:
 			}
-
 		}
-
 	}(source)
 	return out
 }
 
-func mergeFanIn(channels ...<-chan Data) <-chan Data {
+func mergeFanIn(ctx context.Context, channels ...<-chan Data) <-chan Data {
 	var (
 		wg  sync.WaitGroup
-		out = make(chan Data)
+		out = make(chan Data, bufferSize)
 	)
 
 	output := func(source <-chan Data) {
 		defer wg.Done()
 
-		for i := range source {
-			out <- i
+		for c := range source {
+			select {
+			case <-ctx.Done():
+				fmt.Println("fanin cancelled")
+				return
+			case out <- c:
+			}
 		}
 	}
 
@@ -130,12 +146,15 @@ func mergeFanIn(channels ...<-chan Data) <-chan Data {
 func main() {
 	start := time.Now()
 
-	out1 := readCSV(csv1)
-	out2 := readCSV(csv2)
-	out3 := readCSV(csv3)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out1 := readCSV(ctx, csv1)
+	out2 := readCSV(ctx, csv2)
+	out3 := readCSV(ctx, csv3)
 
 	// gather multiple channels into one processing function.
-	merged := mergeFanIn(out1, out2, out3)
+	merged := mergeFanIn(ctx, out1, out2, out3)
 
 	for i := range merged {
 		fmt.Printf("output: %s saving: %.2f but has networth %.2f\n", i.Email, i.Saving, i.NetWorth)
