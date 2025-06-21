@@ -34,13 +34,37 @@ func httpGetter(ctx context.Context, url string) (string, error) {
 	return string(bytes), nil
 }
 
-func consumer(ctx context.Context, email string) {
-	url := "https://httpbin.org/anything/" + email
-	_, err := httpGetter(ctx, url)
-	if err != nil {
-		return
+func consumer(ctx context.Context, workerID int, jobs <-chan string, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for email := range jobs {
+		fmt.Println("worker:", workerID, "processing", email)
+
+		// no need to check cancellation using select.
+		// because consumer and httpGetter is already context aware.
+		// if parents context canceled, and this function automatically cancel.
+		url := "https://httpbin.org/anything/" + email
+		_, err := httpGetter(ctx, url)
+		if err != nil {
+			fmt.Println("error processing:", email)
+			continue
+		}
+
+		fmt.Println(email, "processed successfully")
 	}
-	fmt.Println(email, "processed successfully")
+}
+
+func producer(ctx context.Context, jobs chan<- string, emails []string) {
+	defer close(jobs)
+
+	for _, email := range emails {
+		// check cancellation before publish data to a channel.
+		select {
+		case <-ctx.Done():
+			return
+		case jobs <- email:
+		}
+	}
 }
 
 func main() {
@@ -82,27 +106,18 @@ func main() {
 	}
 
 	// single channel for producer and consumer.
-	jobs := make(chan string)
+	// make it buffered channel because it has multiple consumers.
+	// buffer size is equal to number of worker.
+	jobs := make(chan string, numberOfWorker)
 
 	// producer sending email data thru channel.
-	go func() {
-		defer close(jobs)
-		for _, e := range emails {
-			jobs <- e
-		}
-	}()
+	go producer(ctx, jobs, emails)
 
 	var wg sync.WaitGroup
 
 	for i := 0; i < numberOfWorker; i++ {
 		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			for task := range jobs {
-				fmt.Println("worker:", workerID, "processing", task)
-				consumer(ctx, task)
-			}
-		}(i)
+		go consumer(ctx, i, jobs, &wg)
 	}
 
 	wg.Wait()
